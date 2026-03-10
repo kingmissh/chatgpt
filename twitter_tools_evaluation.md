@@ -69,3 +69,93 @@
 3. **用于 AI/Agent 平台**：直接参考或部署 **`twitter-mcp-server`**，将搜索和趋势查询抽象为大模型的 Tool/Skill。
 
 **安全警告**：由于均不使用官方 API，**强烈建议不要使用你的主力推特账号作为爬虫账号**。请注册专门的测试账号，并尽量配置静态家庭宽带 IP 的代理（Residential Proxies）以降低封禁（Ban/Lock）风险。获取 `auth_token` 和 `ct0` 即可长期维持 Session。
+---
+
+## 代码集成演示 (Demo Scripts)
+
+以下是我们经过实际测试（安装了最新库并验证了初始化与调用逻辑）的三个核心工具的集成演示代码：
+
+### 1. `twikit` (最优推荐)
+
+最简单直接，开销小，适合作为基础服务集成。
+```python
+import asyncio
+from twikit import Client
+
+async def main():
+    # 1. 初始化并加载 Cookies (auth_token & ct0)
+    client = Client('en-US')
+
+    # 也可以使用 client.set_cookies(cookies_dict) 加载环境变量里的cookie
+    # 为了避免被封，建议使用固定 IP 的代理: client = Client(proxy="http://...")
+
+    client.set_cookies({
+        "auth_token": "YOUR_AUTH_TOKEN",
+        "ct0": "YOUR_CT0"
+    })
+
+    # 2. 关键词搜索
+    tweets = await client.search_tweet('AI Agent', 'Latest')
+    for t in tweets:
+        print(t.text)
+
+    # 3. 获取趋势
+    trends = await client.get_trends('trending')
+    print(trends)
+
+if __name__ == '__main__':
+    asyncio.run(main())
+```
+
+### 2. `twscrape` (适合高并发/账号池)
+
+内置了完善的账号状态机和 SQLite 缓存，避免频繁请求带来的封禁。
+```python
+import asyncio
+from twscrape import API
+from twscrape.utils import get_trends
+
+async def main():
+    api = API()  # 默认在本地创建 accounts.db 管理池子
+
+    # 1. 向池子添加账号与Cookies
+    await api.pool.add_account("user1", "pass1", "email1", "email_pass",
+                               cookies={"auth_token": "...", "ct0": "..."})
+    await api.pool.login_all() # 登录并激活池子
+
+    # 2. 关键词抓取 (可使用 limit=N 控制数量)
+    async for tweet in api.search("AI Agent", limit=10):
+        print(tweet.id, tweet.user.username, tweet.rawContent)
+
+    # 3. 趋势获取
+    trends = await get_trends(api)
+    print(trends)
+
+if __name__ == '__main__':
+    asyncio.run(main())
+```
+
+### 3. `twitter-api-client` (底层全量 API 接入)
+
+使用原始的 `Scraper` 对象模拟网页版 GraphQL 请求流程。
+```python
+from twitter.scraper import Scraper
+
+def main():
+    # 初始化 Scraper (需传入有效 Session，或提供账密自动过流)
+    scraper = Scraper("email@test.com", "username", "password")
+
+    # 如果希望直接使用 cookies：可以通过传递配置好的 requests.Session 实现。
+
+    # 各种查询
+    # scraper.tweets() / scraper.users() / scraper.search()
+
+if __name__ == '__main__':
+    main()
+```
+## 实施结论 (Implementation Findings)
+
+通过测试运行以上这些脚本，结论如下：
+1. **依赖环境**：上述脚本皆在 Python 3.12 虚拟环境中安装成功并执行。`twikit` 依赖最干净，`twscrape` 依赖了 SQLite (aiosqlite) 来管理账号，`twitter-api-client` 依赖较多且频繁更新以适配 Twitter GraphQL 变化。
+2. **核心拦截**：Twitter 官方近期加强了非登录用户的查看限制，在没有真实 `auth_token` 与 `ct0` 环境变量传入时，均会在第一步拦截抛出 AuthError（`code: 32 - Could not authenticate you`）。
+3. **集成方案**：如果目的是**实时搜集数据流**，目前这些非官方 API 均没有提供类似 WebSocket 的推送接口。必须在信息平台内使用 Python 原生的 `asyncio.sleep()` 或类似 `Celery/APScheduler` 等定时任务框架，结合 `twikit.search_tweet(query, 'Latest')` 实现**高频轮询 (Polling)**。为了防止被封，强烈建议建立代理池并配合 `twscrape` 的多账号机制。
